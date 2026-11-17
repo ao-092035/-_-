@@ -1,0 +1,179 @@
+Option Explicit
+'==============================================================================
+' フォーム：UserForm_印刷選択
+'   対象者を選んで「印刷実行」または「pdf発行」を行う
+'   ・印刷の処理       … このフォームの btn印刷_Click（v1.0 のまま変更なし）
+'   ・PDF発行の処理    … 標準モジュール M_PDF発行（ボタンからはそこを呼ぶだけ）
+'------------------------------------------------------------------------------
+' ■変更履歴
+'  v1.0             印刷実行版
+'  v1.1  2026/11/17  ・対象者一覧の条件を「1月(G列)≠0」→「合計列≠0」に変更
+'                      （列は見出しの文字で探す。処理は M_PDF発行.対象者一覧を取得）
+'                    ・btnPDF発行_Click を追加
+'                    ・元の UserForm_Initialize はコメントにして下に残す
+'==============================================================================
+
+'------------------------------------------------------------------------------
+' 【v1.1 変更】フォーム表示時：対象者一覧を作る
+'   「掛_月別-☆」の合計が 0 以外の人を並べる（印刷・PDF発行で共通）
+'------------------------------------------------------------------------------
+Private Sub UserForm_Initialize()
+    Dim 対象者 As Collection
+    Dim 名前 As Variant
+
+    Me.Caption = "印刷対象者の選択"
+    ListBox1.Clear
+
+    ' 一覧づくりは標準モジュールにまとめてある（見出し名から列を探す）
+    Set 対象者 = M_PDF発行.対象者一覧を取得()
+    If 対象者 Is Nothing Then Exit Sub      ' 失敗したときはメッセージ表示済み
+
+    For Each 名前 In 対象者
+        ListBox1.AddItem 名前
+    Next 名前
+
+    If ListBox1.ListCount = 0 Then
+        MsgBox "一覧に出せる対象者がいません。" & vbCrLf & _
+               "（「掛_月別-☆」で合計が 0 以外の人がいません）", vbExclamation, "対象者の選択"
+    End If
+End Sub
+
+'------------------------------------------------------------------------------
+' 【v1.1 で置き換えた元のコード（参考として残す。動かない）】
+'   1月(G列)が 0 以外の人だけを一覧にしていたため、2月以降に始めた人が出なかった
+'------------------------------------------------------------------------------
+'Private Sub UserForm_Initialize()
+'    Dim wsList As Worksheet
+'    Dim lastRow As Long
+'    Dim i As Long
+'    Dim fname As String
+'    Dim gval As Variant
+'
+'    Me.Caption = "印刷対象者の選択"
+'
+'    ' 掛_月別-☆ シートのF列（名前）をG列に値がある行のみ取得
+'    Set wsList = ThisWorkbook.Sheets("掛_月別-☆")
+'    lastRow = wsList.Cells(wsList.Rows.count, 6).End(xlUp).Row  ' F列の最終行
+'
+'    ListBox1.Clear
+'    For i = 6 To lastRow
+'        fname = wsList.Cells(i, 6).Value   ' F列：名前
+'        gval = wsList.Cells(i, 7).Value    ' G列：金額（値がある行のみ対象）
+'        If fname <> "" And gval <> "" And gval <> 0 Then
+'            ListBox1.AddItem fname
+'        End If
+'    Next i
+'End Sub
+
+Private Sub btn印刷_Click()
+    Dim selectedItems() As String
+    Dim count As Integer
+    Dim i As Integer
+    Dim confirmMsg As String
+    Dim ws As Worksheet
+
+    count = 0
+    For i = 0 To ListBox1.ListCount - 1
+        If ListBox1.Selected(i) Then count = count + 1
+    Next i
+
+    If count = 0 Then
+        MsgBox "印刷する対象者を1名以上選択してください。", vbExclamation, "未選択"
+        Exit Sub
+    End If
+
+    ReDim selectedItems(count - 1)
+    Dim idx As Integer
+    idx = 0
+    For i = 0 To ListBox1.ListCount - 1
+        If ListBox1.Selected(i) Then
+            selectedItems(idx) = ListBox1.List(i)
+            idx = idx + 1
+        End If
+    Next i
+
+    ' 確認メッセージ（名前一覧つき）
+    confirmMsg = "以下 " & count & " 名を印刷します。" & vbCrLf & vbCrLf
+    For i = 0 To count - 1
+        confirmMsg = confirmMsg & "　・" & selectedItems(i) & vbCrLf
+    Next i
+    confirmMsg = confirmMsg & vbCrLf & "印刷を実行しますか？"
+
+    If MsgBox(confirmMsg, vbYesNo + vbQuestion, "印刷確認") = vbNo Then
+        Exit Sub
+    End If
+
+    Set ws = ThisWorkbook.Sheets("☆-内訳書用")
+    Application.ScreenUpdating = False
+
+    For i = 0 To count - 1
+        ws.Range("J2").Value = selectedItems(i)
+        Application.Calculate
+
+        With ws.PageSetup
+            .Orientation = xlLandscape
+            .Zoom = False
+            .FitToPagesWide = 1
+            .FitToPagesTall = 1
+            .PrintArea = ""
+        End With
+
+        ws.PrintOut Copies:=1, Collate:=True
+    Next i
+
+    Application.ScreenUpdating = True
+    Unload Me
+
+    MsgBox count & " 名分の印刷が完了しました。", vbInformation, "完了"
+End Sub
+
+Private Sub btn全選択_Click()
+    Dim i As Integer
+    For i = 0 To ListBox1.ListCount - 1
+        ListBox1.Selected(i) = True
+    Next i
+End Sub
+
+Private Sub btn全解除_Click()
+    Dim i As Integer
+    For i = 0 To ListBox1.ListCount - 1
+        ListBox1.Selected(i) = False
+    Next i
+End Sub
+
+Private Sub btnキャンセル_Click()
+    Unload Me
+End Sub
+
+'------------------------------------------------------------------------------
+' 【v1.1 追加】pdf発行ボタン：選ばれた人を M_PDF発行 に渡して PDF を作る
+'   最後まで処理したらフォームを閉じる（確認でキャンセルしたときは開いたまま）
+'------------------------------------------------------------------------------
+Private Sub btnPDF発行_Click()
+    Dim 選択者() As String
+    Dim 件数 As Long
+    Dim 位置 As Long
+    Dim i As Long
+
+    ' 選ばれている人数を数える
+    For i = 0 To ListBox1.ListCount - 1
+        If ListBox1.Selected(i) Then 件数 = 件数 + 1
+    Next i
+
+    If 件数 = 0 Then
+        MsgBox "PDF を発行する対象者を1名以上選択してください。", vbExclamation, "未選択"
+        Exit Sub
+    End If
+
+    ' 選ばれている人の名前を配列に入れる
+    ReDim 選択者(0 To 件数 - 1)
+    For i = 0 To ListBox1.ListCount - 1
+        If ListBox1.Selected(i) Then
+            選択者(位置) = ListBox1.List(i)
+            位置 = 位置 + 1
+        End If
+    Next i
+
+    ' PDF発行の本体を呼ぶ
+    If M_PDF発行.PDF発行を実行(選択者) Then Unload Me
+End Sub
